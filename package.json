@@ -1,0 +1,17 @@
+{
+  "name": "gwr-shopify-file-save-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@shopify/shopify-api": "^11.13.0",
+    "form-data": "^4.0.3",
+    "node-fetch": "^3.3.2"
+  }
+}
