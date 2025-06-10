@@ -1,98 +1,79 @@
 # GWR Shopify File Save App
 
-A Next.js application that handles file uploads to Vercel Blob Storage and Shopify, with automatic PDF generation.
+A serverless API for handling certificate file uploads to Shopify's Files API.
 
 ## Features
 
-- PNG file upload to Vercel Blob Storage
-- Automatic PDF generation from PNG files
-- File creation in Shopify via GraphQL API
-- Error handling and logging
-- Secure file storage and access
+- Uploads PNG and PDF files to Vercel Blob storage
+- Creates files in Shopify using the GraphQL Admin API
+- Handles CORS and preflight requests
+- Supports both PNG and PDF file types
+- Returns Shopify and Blob URLs for uploaded files
 
-## Prerequisites
+## API Endpoint
 
-- Node.js 18 or later
-- Vercel account with Blob Storage enabled
-- Shopify store with Admin API access
+POST `/api/certificates/create`
 
-## Environment Variables
+### Request Body
 
-The following environment variables are required:
-
-```env
-# Vercel Blob Storage
-BLOB_READ_WRITE_TOKEN=your_blob_token
-
-# Shopify API
-SHOPIFY_ACCESS_TOKEN=your_shopify_token
-SHOPIFY_SHOP_DOMAIN=your-store.myshopify.com
-```
-
-## Local Development
-
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-2. Copy `.env.example` to `.env.local` and fill in your environment variables.
-
-3. Run the development server:
-   ```bash
-   npm run dev
-   ```
-
-## Deployment to Vercel
-
-1. Push your code to a Git repository (GitHub, GitLab, or Bitbucket).
-
-2. Import your project in the Vercel dashboard.
-
-3. Configure the following environment variables in your Vercel project settings:
-   - `BLOB_READ_WRITE_TOKEN`
-   - `SHOPIFY_ACCESS_TOKEN`
-   - `SHOPIFY_SHOP_DOMAIN`
-
-4. Deploy! Vercel will automatically build and deploy your application.
-
-## API Endpoints
-
-### POST /api/certificates/create
-
-Creates a PNG file and generates a PDF version.
-
-Request body:
 ```json
 {
   "fileData": "base64_encoded_png_data",
-  "fileName": "certificate.png",
-  "mimeType": "image/png"
+  "fileName": "certificate_name.png",
+  "mimeType": "image/png",
+  "pdfData": "base64_encoded_pdf_data (optional)",
+  "pdfFileName": "certificate_name.pdf (optional)"
 }
 ```
 
-Response:
+### Response
+
 ```json
 {
   "success": true,
   "files": {
     "png": {
       "id": "shopify_file_id",
-      "url": "shopify_file_url",
+      "url": "shopify_cdn_url",
       "blobUrl": "vercel_blob_url"
     },
     "pdf": {
       "id": "shopify_file_id",
-      "url": "shopify_file_url",
+      "url": "shopify_cdn_url",
       "blobUrl": "vercel_blob_url"
     }
   }
 }
 ```
 
-## Testing
+## Environment Variables
 
-Run the test script to verify file upload and PDF generation:
-```bash
-npm test
-```
+Required environment variables:
+
+- `SHOPIFY_ACCESS_TOKEN`: Shopify Admin API access token (must start with shpat_)
+- `SHOPIFY_SHOP_DOMAIN`: Your Shopify store domain (e.g., your-store.myshopify.com)
+- `BLOB_READ_WRITE_TOKEN`: Vercel Blob storage access token
+
+## Development
+
+1. Clone the repository
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Create a `.env` file with required environment variables
+4. Deploy to Vercel:
+   ```bash
+   vercel deploy
+   ```
+
+## Error Handling
+
+The API returns appropriate HTTP status codes:
+
+- 200: Success
+- 400: Missing required fields
+- 405: Method not allowed
+- 500: Server error
+
+Error responses include detailed error messages and maintain URLs of any files that were successfully uploaded before the error occurred.
