@@ -4,5 +4,18 @@
   "devCommand": "next dev",
   "installCommand": "npm install",
   "framework": "nextjs",
-  "regions": ["sin1"]
+  "regions": ["sin1"],
+  "functions": {
+    "api/certificates/create.js": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/certificates/create",
+      "methods": ["POST", "OPTIONS"],
+      "dest": "/api/certificates/create.js"
+    }
+  ]
 }
