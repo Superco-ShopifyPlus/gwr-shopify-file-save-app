@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { put } from '@vercel/blob';
+import { PDFDocument, rgb } from 'pdf-lib';
 
 // Debug logging for environment variables
 console.log('Environment check:', {
@@ -113,7 +114,12 @@ async function createFileViaGraphQL(fileUrl, fileName, mimeType) {
 
 export default async function handler(req, res) {
     // Set CORS headers
-    res.setHeader('Access-Control-Allow-Origin', 'https://gwrstore.com');
+    const allowedOrigins = ['https://gwrstore.com', 'http://localhost:3000', 'http://127.0.0.1:3000'];
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Max-Age', '86400');
@@ -126,7 +132,7 @@ export default async function handler(req, res) {
 
     // Only allow POST requests
     if (req.method !== 'POST') {
-        console.log('Method not allowed:', req.method);
+        // console.log('Method not allowed:', req.method);
         res.status(405).json({ error: 'Method not allowed' });
         return;
     }
@@ -135,13 +141,13 @@ export default async function handler(req, res) {
     let pdfBlobUrl = null;
 
     try {
-        console.log('Request received:', {
-            method: req.method,
-            headers: req.headers,
-            bodyKeys: Object.keys(req.body || {})
-        });
+        // console.log('Request received:', {
+        //     method: req.method,
+        //     headers: req.headers,
+        //     bodyKeys: Object.keys(req.body || {})
+        // });
 
-        const { fileData, fileName, mimeType, pdfData, pdfFileName } = req.body;
+        const { fileData, fileName, mimeType } = req.body;
 
         if (!fileData || !fileName || !mimeType) {
             console.error('Missing required fields:', {
@@ -156,25 +162,46 @@ export default async function handler(req, res) {
         // Step 1: Upload PNG to Vercel Blob
         console.log('Uploading PNG to Vercel Blob...');
         const pngBuffer = Buffer.from(fileData.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+
+        // console.log('Attempting to upload to Vercel Blob...');
         const blob = await put(fileName, pngBuffer, {
             access: 'public',
             addRandomSuffix: false,
             contentType: mimeType
         });
-        console.log('PNG uploaded to Vercel Blob:', blob.url);
+        console.log('Successfully uploaded to Vercel Blob:', blob.url);
         blobUrl = blob.url;
 
         // Step 2: Create PNG file in Shopify
-        console.log('Creating PNG file in Shopify...');
+        console.log('Attempting to create file in Shopify via GraphQL...');
         const pngUpload = await createFileViaGraphQL(blob.url, fileName, mimeType);
-        console.log('PNG file created in Shopify:', pngUpload);
+        // console.log('Successfully created PNG file in Shopify:', pngUpload);
 
         let pdfUpload = null;
-        // Step 3: Handle PDF if provided
-        if (pdfData && pdfFileName) {
+        try {
+            // Step 3: Generate and upload PDF
+            console.log('Generating PDF from PNG...');
+            const pdfDoc = await PDFDocument.create();
+            const pngImageBytes = pngBuffer;
+            const pngImage = await pdfDoc.embedPng(pngImageBytes);
+            const {
+                width,
+                height
+            } = pngImage.scale(1);
+
+            const page = pdfDoc.addPage([width, height]);
+            page.drawImage(pngImage, {
+                x: 0,
+                y: 0,
+                width: width,
+                height: height
+            });
+
+            const pdfBytes = await pdfDoc.save();
+            const pdfFileName = fileName.replace(/\.png$/, '.pdf');
+
             console.log('Uploading PDF to Vercel Blob...');
-            const pdfBuffer = Buffer.from(pdfData, 'base64');
-            const pdfBlob = await put(pdfFileName, pdfBuffer, {
+            const pdfBlob = await put(pdfFileName, pdfBytes, {
                 access: 'public',
                 addRandomSuffix: false,
                 contentType: 'application/pdf'
@@ -186,6 +213,13 @@ export default async function handler(req, res) {
             console.log('Creating PDF file in Shopify...');
             pdfUpload = await createFileViaGraphQL(pdfBlob.url, pdfFileName, 'application/pdf');
             console.log('PDF file created in Shopify:', pdfUpload);
+        } catch (pdfError) {
+            console.error('Failed to generate or upload PDF:', {
+                name: pdfError.name,
+                message: pdfError.message,
+                stack: pdfError.stack
+            });
+            // Continue without PDF, as PNG was successful
         }
 
         // Return success response with both files

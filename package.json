@@ -10,7 +10,8 @@
   "license": "ISC",
   "dependencies": {
     "@vercel/blob": "^0.22.3",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
     "dotenv": "^16.5.0"
