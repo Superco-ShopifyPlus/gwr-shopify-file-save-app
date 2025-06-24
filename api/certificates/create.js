@@ -1,75 +1,164 @@
 import fetch from 'node-fetch';
 import { put } from '@vercel/blob';
-import { PDFDocument, rgb } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
+import * as canvas from '@napi-rs/canvas';
+import path from 'path';
 
-// Debug logging for environment variables
-console.log('Environment check:', {
-    hasShopifyToken: !!process.env.SHOPIFY_ACCESS_TOKEN,
-    tokenPrefix: process.env.SHOPIFY_ACCESS_TOKEN?.substring(0, 5),
-    hasShopifyDomain: !!process.env.SHOPIFY_SHOP_DOMAIN,
-    domainSample: process.env.SHOPIFY_SHOP_DOMAIN
-});
-
-// Validate environment variables
-if (!process.env.SHOPIFY_ACCESS_TOKEN || !process.env.SHOPIFY_SHOP_DOMAIN) {
-    console.error('Missing environment variables:', {
-        hasShopifyToken: !!process.env.SHOPIFY_ACCESS_TOKEN,
-        hasShopifyDomain: !!process.env.SHOPIFY_SHOP_DOMAIN
-    });
-    throw new Error('Missing required environment variables SHOPIFY_ACCESS_TOKEN or SHOPIFY_SHOP_DOMAIN');
-}
-
-// Validate Shopify domain format
-if (!process.env.SHOPIFY_SHOP_DOMAIN.includes('myshopify.com')) {
-    console.error('Invalid Shopify domain format:', process.env.SHOPIFY_SHOP_DOMAIN);
-    throw new Error('SHOPIFY_SHOP_DOMAIN must be in the format your-store.myshopify.com');
-}
-
-// Validate Shopify access token format
-if (!process.env.SHOPIFY_ACCESS_TOKEN.startsWith('shpat_')) {
-    console.error('Invalid Shopify access token format:', process.env.SHOPIFY_ACCESS_TOKEN.substring(0, 5));
-    throw new Error('SHOPIFY_ACCESS_TOKEN must start with shpat_');
-}
-
-// Configure body parser size limit
-export const config = {
-    api: {
-        bodyParser: {
-            sizeLimit: '20mb'
-        }
+let fontRegistered = false;
+const registerGolosFont = () => {
+    if (fontRegistered) return;
+    try {
+        const fontPath = path.join(process.cwd(), 'api', 'assets', 'GolosText-Bold.ttf');
+        console.log(`Attempting to register font from path: ${fontPath}`);
+        canvas.GlobalFonts.registerFromPath(fontPath, 'Golos');
+        console.log('Font registered successfully.');
+        fontRegistered = true;
+    } catch (fontError) {
+        console.error('Failed to register font:', fontError);
     }
 };
 
+export default async function handler(req, res) {
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    // Handle preflight OPTIONS request
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
+    // Only allow POST requests
+    if (req.method !== 'POST') {
+        res.status(405).json({ error: 'Method not allowed' });
+        return;
+    }
+
+    registerGolosFont();
+
+    try {
+        const { imageUrl, text, position, textSettings, fileName, mimeType, previewDimensions, isFetchedText } = req.body;
+
+        if (!imageUrl || !text || !position || !textSettings || !fileName || !mimeType || !previewDimensions) {
+            return res.status(400).json({ error: 'Missing required fields for image generation' });
+        }
+
+        const image = await canvas.loadImage(imageUrl);
+        const canvasInstance = canvas.createCanvas(image.width, image.height);
+        const context = canvasInstance.getContext('2d');
+
+        const scaleX = image.width / previewDimensions.width;
+        const scaleY = canvasInstance.height / previewDimensions.height;
+        const scaledX = previewDimensions.width * (position.x / 100);
+        const scaledY = previewDimensions.width * (position.y / 100);
+        const fontSize = textSettings.fontSize * 0.6;
+        context.font = `bold ${fontSize}px Golos`;
+
+        // Set color and log it
+        console.log('[CERTIFICATE PNG DEBUG] fillStyle:', textSettings.fontColor);
+        context.fillStyle = textSettings.fontColor;
+
+        context.drawImage(image, 0, 0, image.width, image.height);
+
+        // Positioning logic remains the same
+        const leftPos = textSettings.leftPos !== undefined ? textSettings.leftPos : 50;
+        const topPos = textSettings.topPos !== undefined ? textSettings.topPos : 50;
+        const x = canvasInstance.width * (leftPos / 100);
+        const y = canvasInstance.height * (topPos / 100);
+
+        let textAlign = 'center';
+        if (leftPos == 50) textAlign = 'center';
+        else if (leftPos < 50) textAlign = 'left';
+        else textAlign = 'right';
+        context.textAlign = textAlign;
+        context.textBaseline = 'middle';
+
+        // Scale lineHeight and maxWidth
+        const maxWidth = canvasInstance.width * 0.25;
+        const lineHeight = fontSize * 1.25;
+        console.log('[CERTIFICATE PNG DEBUG]', {
+            x, y, fontSize, maxWidth, textAlign, isFetchedText, text
+        });
+
+        // --- Wrapped text logic for fetched text ---
+        function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight) {
+            const paragraphs = text.split('\n');
+            for (let p = 0; p < paragraphs.length; p++) {
+                let words = paragraphs[p].split(' ');
+                let line = '';
+                for (let n = 0; n < words.length; n++) {
+                    let testLine = line + words[n] + ' ';
+                    let metrics = ctx.measureText(testLine);
+                    let testWidth = metrics.width;
+                    if (testWidth > maxWidth && n > 0) {
+                        ctx.fillText(line, x, y);
+                        line = words[n] + ' ';
+                        y += lineHeight;
+                    } else {
+                        line = testLine;
+                    }
+                }
+                ctx.fillText(line, x, y);
+                y += lineHeight;
+            }
+        }
+
+        if (isFetchedText) {
+            drawWrappedText(context, text, x, y, maxWidth, lineHeight);
+        } else {
+            context.fillText(text, x, y);
+        }
+
+        const pngBuffer = await canvasInstance.toBuffer('image/png');
+
+        const blob = await put(fileName, pngBuffer, { access: 'public', addRandomSuffix: false, contentType: mimeType });
+        const pngUpload = await createFileViaGraphQL(blob.url, fileName, mimeType);
+
+        const pdfDoc = await PDFDocument.create();
+        const pngImage = await pdfDoc.embedPng(pngBuffer);
+        const { width, height } = pngImage.scale(1);
+        const page = pdfDoc.addPage([width, height]);
+        page.drawImage(pngImage, { x: 0, y: 0, width, height });
+        const pdfBytes = await pdfDoc.save();
+        const pdfFileName = fileName.replace(/\.png$/, '.pdf');
+
+        const pdfBlob = await put(pdfFileName, pdfBytes, { access: 'public', addRandomSuffix: false, contentType: 'application/pdf' });
+        const pdfUpload = await createFileViaGraphQL(pdfBlob.url, pdfFileName, 'application/pdf');
+
+        res.status(200).json({
+            success: true,
+            files: {
+                png: { ...pngUpload, blobUrl: blob.url },
+                pdf: { ...pdfUpload, blobUrl: pdfBlob.url }
+            }
+        });
+    } catch (error) {
+        console.error('Server Error:', { name: error.name, message: error.message, stack: error.stack });
+        res.status(500).json({ error: 'Internal server error', message: error.message });
+    }
+}
+
 async function createFileViaGraphQL(fileUrl, fileName, mimeType) {
-    const graphqlUrl = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2024-01/graphql.json`;
+    const shopifyDomain = process.env.SHOPIFY_SHOP_DOMAIN;
+    const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
 
-    console.log('Creating file in Shopify:', {
-        fileName,
-        mimeType,
-        fileUrl,
-        contentType: mimeType.startsWith('image/') ? 'IMAGE' : 'FILE'
-    });
+    if (!shopifyDomain || !accessToken) {
+        const message = 'Shopify domain or access token is not set in environment variables.';
+        console.error(message);
+        throw new Error(message);
+    }
 
+    console.log('Shopify Domain:', shopifyDomain ? 'Set' : 'Not Set');
+    console.log('Shopify Access Token:', accessToken ? 'Set' : 'Not Set');
+    const graphqlUrl = `https://${shopifyDomain}/admin/api/2024-01/graphql.json`;
     const mutation = `
         mutation fileCreate($files: [FileCreateInput!]!) {
             fileCreate(files: $files) {
-                files {
-                    id
-                    preview {
-                        image {
-                            url
-                        }
-                    }
-                    alt
-                }
-                userErrors {
-                    field
-                    message
-                }
+                files { id, preview { image { url } }, alt }
+                userErrors { field, message }
             }
         }
     `;
-
     const variables = {
         files: [{
             contentType: mimeType.startsWith('image/') ? 'IMAGE' : 'FILE',
@@ -77,186 +166,32 @@ async function createFileViaGraphQL(fileUrl, fileName, mimeType) {
             alt: fileName
         }]
     };
-
     const response = await fetch(graphqlUrl, {
         method: 'POST',
         headers: {
-            'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+            'X-Shopify-Access-Token': accessToken,
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-            query: mutation,
-            variables
-        })
+        body: JSON.stringify({ query: mutation, variables })
     });
 
+    const responseText = await response.text();
+
     if (!response.ok) {
-        throw new Error(`Failed to create file via GraphQL: ${await response.text()}`);
+        console.error('Shopify GraphQL API Error Response:', responseText);
+        throw new Error(`Failed to create file via GraphQL: ${responseText}`);
     }
 
-    const data = await response.json();
+    const data = JSON.parse(responseText);
 
     if (data.errors) {
+        console.error('Shopify GraphQL API Errors:', data.errors);
         throw new Error(`GraphQL operation failed: ${JSON.stringify(data.errors)}`);
     }
-
     if (data.data.fileCreate.userErrors.length > 0) {
+        console.error('Shopify GraphQL User Errors:', data.data.fileCreate.userErrors);
         throw new Error(`File creation failed: ${JSON.stringify(data.data.fileCreate.userErrors)}`);
     }
-
     const file = data.data.fileCreate.files[0];
-    return {
-        id: file.id,
-        url: file.preview?.image?.url,
-        alt: file.alt
-    };
-}
-
-export default async function handler(req, res) {
-    // Set CORS headers
-    const allowedOrigins = ['https://gwrstore.com', 'http://localhost:3000', 'http://127.0.0.1:3000'];
-    const origin = req.headers.origin;
-    if (allowedOrigins.includes(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-    }
-
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.setHeader('Access-Control-Max-Age', '86400');
-
-    // Handle preflight request
-    if (req.method === 'OPTIONS') {
-        res.status(200).end();
-        return;
-    }
-
-    // Only allow POST requests
-    if (req.method !== 'POST') {
-        // console.log('Method not allowed:', req.method);
-        res.status(405).json({ error: 'Method not allowed' });
-        return;
-    }
-
-    let blobUrl = null;
-    let pdfBlobUrl = null;
-
-    try {
-        // console.log('Request received:', {
-        //     method: req.method,
-        //     headers: req.headers,
-        //     bodyKeys: Object.keys(req.body || {})
-        // });
-
-        const { fileData, fileName, mimeType } = req.body;
-
-        if (!fileData || !fileName || !mimeType) {
-            console.error('Missing required fields:', {
-                hasFileData: !!fileData,
-                hasFileName: !!fileName,
-                hasMimeType: !!mimeType
-            });
-            res.status(400).json({ error: 'Missing required fields' });
-            return;
-        }
-
-        // Step 1: Upload PNG to Vercel Blob
-        console.log('Uploading PNG to Vercel Blob...');
-        const pngBuffer = Buffer.from(fileData.replace(/^data:image\/\w+;base64,/, ''), 'base64');
-
-        // console.log('Attempting to upload to Vercel Blob...');
-        const blob = await put(fileName, pngBuffer, {
-            access: 'public',
-            addRandomSuffix: false,
-            contentType: mimeType
-        });
-        console.log('Successfully uploaded to Vercel Blob:', blob.url);
-        blobUrl = blob.url;
-
-        // Step 2: Create PNG file in Shopify
-        console.log('Attempting to create file in Shopify via GraphQL...');
-        const pngUpload = await createFileViaGraphQL(blob.url, fileName, mimeType);
-        // console.log('Successfully created PNG file in Shopify:', pngUpload);
-
-        let pdfUpload = null;
-        try {
-            // Step 3: Generate and upload PDF
-            console.log('Generating PDF from PNG...');
-            const pdfDoc = await PDFDocument.create();
-            const pngImageBytes = pngBuffer;
-            const pngImage = await pdfDoc.embedPng(pngImageBytes);
-            const {
-                width,
-                height
-            } = pngImage.scale(1);
-
-            const page = pdfDoc.addPage([width, height]);
-            page.drawImage(pngImage, {
-                x: 0,
-                y: 0,
-                width: width,
-                height: height
-            });
-
-            const pdfBytes = await pdfDoc.save();
-            const pdfFileName = fileName.replace(/\.png$/, '.pdf');
-
-            console.log('Uploading PDF to Vercel Blob...');
-            const pdfBlob = await put(pdfFileName, pdfBytes, {
-                access: 'public',
-                addRandomSuffix: false,
-                contentType: 'application/pdf'
-            });
-            console.log('PDF uploaded to Vercel Blob:', pdfBlob.url);
-            pdfBlobUrl = pdfBlob.url;
-
-            // Step 4: Create PDF file in Shopify
-            console.log('Creating PDF file in Shopify...');
-            pdfUpload = await createFileViaGraphQL(pdfBlob.url, pdfFileName, 'application/pdf');
-            console.log('PDF file created in Shopify:', pdfUpload);
-        } catch (pdfError) {
-            console.error('Failed to generate or upload PDF:', {
-                name: pdfError.name,
-                message: pdfError.message,
-                stack: pdfError.stack
-            });
-            // Continue without PDF, as PNG was successful
-        }
-
-        // Return success response with both files
-        const response = {
-            success: true,
-            files: {
-                png: {
-                    ...pngUpload,
-                    blobUrl: blob.url
-                },
-                ...(pdfUpload && {
-                    pdf: {
-                        ...pdfUpload,
-                        blobUrl: pdfBlobUrl
-                    }
-                })
-            }
-        };
-
-        console.log('Final response:', JSON.stringify(response, null, 2));
-        res.status(200).json(response);
-
-    } catch (error) {
-        console.error('Server Error:', {
-            name: error.name,
-            message: error.message,
-            stack: error.stack,
-            blobUrl,
-            pdfBlobUrl
-        });
-
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message,
-            type: error.name,
-            blobUrl,
-            pdfBlobUrl
-        });
-    }
+    return { id: file.id, url: file.preview?.image?.url, alt: file.alt };
 }

@@ -9,6 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.53",
     "@vercel/blob": "^0.22.3",
     "node-fetch": "^2.7.0",
     "pdf-lib": "^1.17.1"
