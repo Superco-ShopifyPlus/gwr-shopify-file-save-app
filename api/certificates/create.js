@@ -18,95 +18,136 @@ const registerGolosFont = () => {
     }
 };
 
+function normalizeText(raw) {
+    return String(raw || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/\\n/g, '\n');
+}
+
+function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight) {
+    const paragraphs = text.split('\n');
+    for (let p = 0; p < paragraphs.length; p++) {
+        let words = paragraphs[p].split(' ');
+        let line = '';
+        for (let n = 0; n < words.length; n++) {
+            let testLine = line + words[n] + ' ';
+            let metrics = ctx.measureText(testLine);
+            let testWidth = metrics.width;
+            if (testWidth > maxWidth && n > 0) {
+                ctx.fillText(line, x, y);
+                line = words[n] + ' ';
+                y += lineHeight;
+            } else {
+                line = testLine;
+            }
+        }
+        ctx.fillText(line, x, y);
+        y += lineHeight;
+    }
+}
+
+function drawTextLayer(context, canvasInstance, text, settings, shouldWrap) {
+    if (!text || !text.trim() || !settings) return;
+
+    const normalizedText = normalizeText(text);
+    if (!normalizedText.trim()) return;
+
+    const fontSize = (parseFloat(settings.fontSize) || 24) * 0.6;
+    context.font = `bold ${fontSize}px Golos`;
+    context.fillStyle = settings.fontColor || '#000000';
+
+    const leftPos = settings.leftPos !== undefined ? parseFloat(settings.leftPos) : 50;
+    const topPos = settings.topPos !== undefined ? parseFloat(settings.topPos) : 50;
+    const x = canvasInstance.width * (leftPos / 100);
+    const y = canvasInstance.height * (topPos / 100);
+
+    let textAlign = 'center';
+    if (leftPos == 50) textAlign = 'center';
+    else if (leftPos < 50) textAlign = 'left';
+    else textAlign = 'right';
+    context.textAlign = textAlign;
+    context.textBaseline = 'middle';
+
+    const maxWidth = canvasInstance.width * 0.55;
+    const lineHeight = fontSize * 1.25;
+
+    console.log('[CERTIFICATE TEXT LAYER]', {
+        text: normalizedText.substring(0, 50),
+        x, y, fontSize, maxWidth, lineHeight, textAlign, shouldWrap,
+        fontColor: settings.fontColor
+    });
+
+    if (shouldWrap || normalizedText.includes('\n')) {
+        drawWrappedText(context, normalizedText, x, y, maxWidth, lineHeight);
+    } else {
+        context.fillText(normalizedText, x, y);
+    }
+}
+
 export default async function handler(req, res) {
-    // Set CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-    // Handle preflight OPTIONS request
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
-    // Only allow POST requests
     if (req.method !== 'POST') {
-        res.status(405).json({ error: 'Method not allowed' });
-        return;
+        return res.status(405).json({ error: 'Method not allowed' });
     }
 
     registerGolosFont();
 
     try {
-        const { imageUrl, text, position, textSettings, fileName, mimeType, previewDimensions, isFetchedText } = req.body;
+        const {
+            imageUrl,
+            text,
+            position,
+            textSettings,
+            fileName,
+            mimeType,
+            previewDimensions,
+            isFetchedText,
+            recordText,
+            recordTextSettings
+        } = req.body;
 
-        if (!imageUrl || !text || !position || !textSettings || !fileName || !mimeType || !previewDimensions) {
-            return res.status(400).json({ error: 'Missing required fields for image generation' });
+        if (!imageUrl || !fileName || !mimeType || !previewDimensions) {
+            return res.status(400).json({ error: 'Missing required fields: imageUrl, fileName, mimeType, previewDimensions' });
+        }
+
+        const hasCustomText = text && String(text).trim().length > 0;
+        const hasRecordText = recordText && String(recordText).trim().length > 0;
+
+        if (!hasCustomText && !hasRecordText) {
+            return res.status(400).json({ error: 'At least one of text or recordText is required' });
+        }
+
+        if (hasCustomText && !textSettings) {
+            return res.status(400).json({ error: 'textSettings is required when text is provided' });
+        }
+
+        if (hasRecordText && !recordTextSettings) {
+            return res.status(400).json({ error: 'recordTextSettings is required when recordText is provided' });
         }
 
         const image = await canvas.loadImage(imageUrl);
         const canvasInstance = canvas.createCanvas(image.width, image.height);
         const context = canvasInstance.getContext('2d');
 
-        const scaleX = image.width / previewDimensions.width;
-        const scaleY = canvasInstance.height / previewDimensions.height;
-        const scaledX = previewDimensions.width * (position.x / 100);
-        const scaledY = previewDimensions.width * (position.y / 100);
-        const fontSize = textSettings.fontSize * 0.6;
-        context.font = `bold ${fontSize}px Golos`;
-
-        // Set color and log it
-        console.log('[CERTIFICATE PNG DEBUG] fillStyle:', textSettings.fontColor);
-        context.fillStyle = textSettings.fontColor;
-
         context.drawImage(image, 0, 0, image.width, image.height);
 
-        // Positioning logic remains the same
-        const leftPos = textSettings.leftPos !== undefined ? textSettings.leftPos : 50;
-        const topPos = textSettings.topPos !== undefined ? textSettings.topPos : 50;
-        const x = canvasInstance.width * (leftPos / 100);
-        const y = canvasInstance.height * (topPos / 100);
-
-        let textAlign = 'center';
-        if (leftPos == 50) textAlign = 'center';
-        else if (leftPos < 50) textAlign = 'left';
-        else textAlign = 'right';
-        context.textAlign = textAlign;
-        context.textBaseline = 'middle';
-
-        // Scale lineHeight and maxWidth
-        const maxWidth = canvasInstance.width * 0.25;
-        const lineHeight = fontSize * 1.25;
-        console.log('[CERTIFICATE PNG DEBUG]', {
-            x, y, fontSize, maxWidth, textAlign, isFetchedText, text
-        });
-
-        // --- Wrapped text logic for fetched text ---
-        function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight) {
-            const paragraphs = text.split('\n');
-            for (let p = 0; p < paragraphs.length; p++) {
-                let words = paragraphs[p].split(' ');
-                let line = '';
-                for (let n = 0; n < words.length; n++) {
-                    let testLine = line + words[n] + ' ';
-                    let metrics = ctx.measureText(testLine);
-                    let testWidth = metrics.width;
-                    if (testWidth > maxWidth && n > 0) {
-                        ctx.fillText(line, x, y);
-                        line = words[n] + ' ';
-                        y += lineHeight;
-                    } else {
-                        line = testLine;
-                    }
-                }
-                ctx.fillText(line, x, y);
-                y += lineHeight;
-            }
+        // Layer 1: Record text (drawn first, always wrapped)
+        if (hasRecordText) {
+            console.log('[CERTIFICATE] Drawing record text layer');
+            drawTextLayer(context, canvasInstance, recordText, recordTextSettings, true);
         }
 
-        if (isFetchedText) {
-            drawWrappedText(context, text, x, y, maxWidth, lineHeight);
-        } else {
-            context.fillText(text, x, y);
+        // Layer 2: Custom text (drawn second, wrapped only if fetched or multiline)
+        if (hasCustomText) {
+            console.log('[CERTIFICATE] Drawing custom text layer');
+            drawTextLayer(context, canvasInstance, text, textSettings, Boolean(isFetchedText));
         }
 
         const pngBuffer = await canvasInstance.toBuffer('image/png');
